@@ -40,48 +40,80 @@ def init_db():
 
 # ── 쿠팡 크롤러 (curl_cffi = 브라우저 TLS 위장) ──
 def crawl_coupang(pid: str) -> dict:
-    """curl_cffi로 쿠팡 크롤링 — 실제 Chrome TLS 지문 모방"""
-    url = f"https://www.coupang.com/vp/products/{pid}"
-    try:
-        # impersonate="chrome" → 실제 크롬 브라우저와 동일한 TLS 지문
-        resp = curl_requests.get(url, impersonate="chrome", timeout=15, headers={
-            "Accept-Language": "ko-KR,ko;q=0.9",
-            "Accept": "text/html,application/xhtml+xml",
-        })
-        if resp.status_code != 200:
-            return None
-        html = resp.text
-        data = {"pid": pid}
-        
-        # 상품명
-        m = re.search(r'<h1[^>]*class="prod-buy-header__title"[^>]*>([^<]+)', html)
-        if m: data["name"] = m.group(1).strip()
-        
-        # 가격
-        m = re.search(r'total-price[^>]*>[\s]*<strong>([^<]+)', html)
-        if m: data["price"] = int(re.sub(r'[^0-9]', '', m.group(1)))
-        
-        # 리뷰 수
-        m = re.search(r'count-num[^>]*>\(?([\d,]+)\)?', html)
-        if m: data["review_count"] = int(m.group(1).replace(",", ""))
-        
-        # 평점
-        m = re.search(r'rating-star-num[^>]*>(\d+\.?\d*)', html)
-        if m: data["rating"] = float(m.group(1))
-        
-        # 재고 (최대 주문 가능 수량)
-        m = re.search(r'"maxOrderableCount"\s*:\s*(\d+)', html)
-        if m: data["stock"] = int(m.group(1))
-        
-        # 재고 ("단 N개 남음" 텍스트)
-        if "stock" not in data:
-            m = re.search(r'단\s*(\d+)\s*개\s*남', html)
-            if m: data["stock"] = int(m.group(1))
-        
-        return data
-    except Exception as e:
-        print(f"[Crawl Error] {pid}: {e}")
-        return None
+    """쿠팡 크롤링 — 모바일 페이지 + 쿠키 위장"""
+    urls = [
+        f"https://m.coupang.com/vm/products/{pid}",
+        f"https://www.coupang.com/vp/products/{pid}",
+    ]
+    
+    user_agents = [
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.6045.193 Mobile Safari/537.36",
+    ]
+    
+    for url in urls:
+        try:
+            resp = curl_requests.get(url, 
+                impersonate="chrome",
+                timeout=20,
+                headers={
+                    "User-Agent": random.choice(user_agents),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Cache-Control": "no-cache",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Referer": "https://www.google.com/",
+                },
+                cookies={"PCID": f"p{random.randint(10000000,99999999)}", "x-coupang-accept-language": "ko-KR"}
+            )
+            if resp.status_code != 200:
+                continue
+            html = resp.text
+            if len(html) < 1000 or 'captcha' in html.lower() or 'robot' in html.lower():
+                continue
+                
+            data = {"pid": pid}
+            
+            # 상품명 (모바일 + 데스크톱)
+            for pat in [r'<h1[^>]*>([^<]+)</h1>', r'prod-buy-header__title[^>]*>([^<]+)', r'"itemName"\s*:\s*"([^"]+)"', r'"productName"\s*:\s*"([^"]+)"']:
+                m = re.search(pat, html)
+                if m: data["name"] = m.group(1).strip(); break
+            
+            # 가격
+            for pat in [r'"salePrice"\s*:\s*(\d+)', r'"price"\s*:\s*(\d+)', r'total-price[^>]*>[\s]*<strong>([\d,]+)', r'<strong[^>]*>([\d,]+)\s*원']:
+                m = re.search(pat, html)
+                if m: data["price"] = int(m.group(1).replace(",","")); break
+            
+            # 리뷰 수
+            for pat in [r'"ratingTotalCount"\s*:\s*(\d+)', r'"reviewCount"\s*:\s*(\d+)', r'count-num[^>]*>\(?([\d,]+)\)?']:
+                m = re.search(pat, html)
+                if m: data["review_count"] = int(m.group(1).replace(",","")); break
+            
+            # 평점
+            for pat in [r'"ratingAverage"\s*:\s*([\d.]+)', r'"rating"\s*:\s*([\d.]+)']:
+                m = re.search(pat, html)
+                if m: data["rating"] = float(m.group(1)); break
+            
+            # 재고 (핵심!)
+            for pat in [r'"maxOrderableCount"\s*:\s*(\d+)', r'"usableInventoryQty"\s*:\s*(\d+)', r'"stockCount"\s*:\s*(\d+)', r'단\s*(\d+)\s*개\s*남']:
+                m = re.search(pat, html)
+                if m: data["stock"] = int(m.group(1)); break
+            
+            if data.get("name") or data.get("price"):
+                print(f"[Crawl OK] {pid}: {data}")
+                return data
+        except Exception as e:
+            print(f"[Crawl Error] {pid} {url}: {e}")
+            continue
+    
+    print(f"[Crawl FAIL] {pid}: all attempts blocked")
+    return None
 
 def save_data(pid, data):
     today = datetime.now().strftime("%Y-%m-%d %H:00")
