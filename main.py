@@ -1,8 +1,8 @@
 """
-Jason Seller X-Ray — Backend API Server v2.4 (Data Receiver Mode)
+Jason Seller X-Ray — Backend API Server v2.5 (Final Viewer)
 수정 사항: 
-1. 서버 직접 크롤링 대신 브라우저 수집 데이터 수신 기능 강화
-2. CORS 허용 및 데이터 저장 로직 최적화
+1. 브라우저 주소창에서 직접 데이터를 볼 수 있도록 GET /api/report 추가
+2. 데이터 초기화 기능 추가
 """
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,9 +10,9 @@ import sqlite3, os, re
 from datetime import datetime
 from contextlib import contextmanager
 
-app = FastAPI(title="Jason X-Ray API", version="2.4")
+app = FastAPI(title="Jason X-Ray API", version="2.5")
 
-# 브라우저 콘솔에서 데이터를 보낼 수 있도록 CORS 전면 허용
+# CORS 전면 허용
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,9 +38,20 @@ def init_db():
             pid TEXT, stock INTEGER, price INTEGER, recorded_at TEXT)""")
         conn.commit()
 
+@app.get("/")
+def root(): 
+    return {"status": "online", "mode": "receiver", "version": "2.5"}
+
+# [추가] 브라우저 주소창에서 저장된 데이터를 확인하는 경로
+@app.get("/api/report")
+async def get_all_data():
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM products ORDER BY updated_at DESC").fetchall()
+    return {"ok": True, "count": len(rows), "data": [dict(r) for r in rows]}
+
 @app.post("/api/report")
 async def report_data(request: Request):
-    """브라우저 콘솔에서 수집한 데이터를 서버 DB에 저장"""
+    """브라우저 콘솔에서 수집한 데이터를 저장[cite: 2]"""
     try:
         data = await request.json()
         pid = str(data.get("pid", ""))
@@ -59,8 +70,14 @@ async def report_data(request: Request):
     except Exception as e:
         return {"ok": False, "msg": str(e)}
 
-@app.get("/")
-def root(): return {"status": "online", "mode": "receiver"}
+# [추가] 테스트용 데이터 초기화 (필요할 때만 사용)[cite: 2]
+@app.get("/api/clear")
+async def clear_db():
+    with get_db() as conn:
+        conn.execute("DELETE FROM products")
+        conn.execute("DELETE FROM stock_history")
+        conn.commit()
+    return {"ok": True, "msg": "DB Cleared"}
 
 @app.on_event("startup")
 def startup(): init_db()
