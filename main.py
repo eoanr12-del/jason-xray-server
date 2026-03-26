@@ -39,8 +39,27 @@ def init_db():
         conn.commit()
 
 # ── 쿠팡 크롤러 (curl_cffi = 브라우저 TLS 위장) ──
+PROXIES = [
+    {"addr":"31.59.20.176","port":"6754"},
+    {"addr":"23.95.150.145","port":"6114"},
+    {"addr":"198.23.239.134","port":"6540"},
+    {"addr":"45.38.107.97","port":"6014"},
+    {"addr":"107.172.163.27","port":"6543"},
+    {"addr":"198.105.121.200","port":"6462"},
+    {"addr":"216.10.27.159","port":"6837"},
+    {"addr":"142.111.67.146","port":"5611"},
+    {"addr":"191.96.254.138","port":"6185"},
+    {"addr":"31.58.9.4","port":"6077"},
+]
+PROXY_USER = "rfblprmg"
+PROXY_PASS = "5x2k0pvne9a0"
+
+def get_proxy():
+    p = random.choice(PROXIES)
+    return f"http://{PROXY_USER}:{PROXY_PASS}@{p['addr']}:{p['port']}"
+
 def crawl_coupang(pid: str) -> dict:
-    """쿠팡 크롤링 — 모바일 페이지 + 쿠키 위장"""
+    """쿠팡 크롤링 — 프록시 로테이션 + 모바일 위장"""
     urls = [
         f"https://m.coupang.com/vm/products/{pid}",
         f"https://www.coupang.com/vp/products/{pid}",
@@ -50,19 +69,22 @@ def crawl_coupang(pid: str) -> dict:
         "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
         "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
         "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.6045.193 Mobile Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
     
-    for url in urls:
+    for attempt in range(3):
+        proxy = get_proxy()
+        url = random.choice(urls)
         try:
             resp = curl_requests.get(url, 
                 impersonate="chrome",
                 timeout=20,
+                proxies={"http": proxy, "https": proxy},
                 headers={
                     "User-Agent": random.choice(user_agents),
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
                     "Accept-Encoding": "gzip, deflate, br",
-                    "Cache-Control": "no-cache",
                     "Sec-Fetch-Dest": "document",
                     "Sec-Fetch-Mode": "navigate",
                     "Sec-Fetch-Site": "none",
@@ -70,37 +92,33 @@ def crawl_coupang(pid: str) -> dict:
                     "Upgrade-Insecure-Requests": "1",
                     "Referer": "https://www.google.com/",
                 },
-                cookies={"PCID": f"p{random.randint(10000000,99999999)}", "x-coupang-accept-language": "ko-KR"}
             )
             if resp.status_code != 200:
+                print(f"[Crawl] {pid} attempt {attempt+1}: status {resp.status_code}")
                 continue
             html = resp.text
             if len(html) < 1000 or 'captcha' in html.lower() or 'robot' in html.lower():
+                print(f"[Crawl] {pid} attempt {attempt+1}: blocked/captcha")
                 continue
                 
             data = {"pid": pid}
             
-            # 상품명 (모바일 + 데스크톱)
             for pat in [r'<h1[^>]*>([^<]+)</h1>', r'prod-buy-header__title[^>]*>([^<]+)', r'"itemName"\s*:\s*"([^"]+)"', r'"productName"\s*:\s*"([^"]+)"']:
                 m = re.search(pat, html)
                 if m: data["name"] = m.group(1).strip(); break
             
-            # 가격
             for pat in [r'"salePrice"\s*:\s*(\d+)', r'"price"\s*:\s*(\d+)', r'total-price[^>]*>[\s]*<strong>([\d,]+)', r'<strong[^>]*>([\d,]+)\s*원']:
                 m = re.search(pat, html)
                 if m: data["price"] = int(m.group(1).replace(",","")); break
             
-            # 리뷰 수
             for pat in [r'"ratingTotalCount"\s*:\s*(\d+)', r'"reviewCount"\s*:\s*(\d+)', r'count-num[^>]*>\(?([\d,]+)\)?']:
                 m = re.search(pat, html)
                 if m: data["review_count"] = int(m.group(1).replace(",","")); break
             
-            # 평점
             for pat in [r'"ratingAverage"\s*:\s*([\d.]+)', r'"rating"\s*:\s*([\d.]+)']:
                 m = re.search(pat, html)
                 if m: data["rating"] = float(m.group(1)); break
             
-            # 재고 (핵심!)
             for pat in [r'"maxOrderableCount"\s*:\s*(\d+)', r'"usableInventoryQty"\s*:\s*(\d+)', r'"stockCount"\s*:\s*(\d+)', r'단\s*(\d+)\s*개\s*남']:
                 m = re.search(pat, html)
                 if m: data["stock"] = int(m.group(1)); break
@@ -109,10 +127,11 @@ def crawl_coupang(pid: str) -> dict:
                 print(f"[Crawl OK] {pid}: {data}")
                 return data
         except Exception as e:
-            print(f"[Crawl Error] {pid} {url}: {e}")
+            print(f"[Crawl Error] {pid} attempt {attempt+1}: {e}")
+            time.sleep(random.uniform(1, 3))
             continue
     
-    print(f"[Crawl FAIL] {pid}: all attempts blocked")
+    print(f"[Crawl FAIL] {pid}: all attempts failed")
     return None
 
 def save_data(pid, data):
