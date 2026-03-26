@@ -1,10 +1,9 @@
 services:
   - type: web
-    name: jason-xray-api
+    name: jason-xray-server
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    plan: free
+    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT
     envVars:
-      - key: DB_PATH
-        value: /tmp/xray.db
+      - key: PYTHON_VERSION
+        value: "3.11.0"
